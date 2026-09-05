@@ -129,6 +129,7 @@ struct PlateSinkageParams {
     bool output = false;      // write settled particle state + geostatic profile
     bool render = true;       // run-time visualization (VSG); --no_vis disables
     bool verbose = false;     // verbose solver output
+    double particle_fps = 50;
 };
 
 // -----------------------------------------------------------------------------
@@ -162,6 +163,7 @@ bool GetProblemSpecs(int argc, char* argv[], PlateSinkageParams& p) {
     cli.AddOption<int>("Output", "output_points", "Number of equidistant-in-time output intervals (curve has ~this many rows)", std::to_string(p.output_points));
     cli.AddOption<bool>("Output", "output", "Write settled particle state and geostatic profile");
     cli.AddOption<bool>("Output", "quiet", "Disable verbose solver output");
+    cli.AddOption<double>("Output", "particle_fps", "Particle-frame output rate during the push [fps]", std::to_string(p.particle_fps));
     cli.AddOption<bool>("Visualization", "no_vis", "Disable run-time visualization");
 
     if (!cli.Parse(argc, argv)) {
@@ -192,6 +194,7 @@ bool GetProblemSpecs(int argc, char* argv[], PlateSinkageParams& p) {
     p.free_surface_threshold = cli.GetAsType<double>("free_surface_threshold");
 
     p.output_points = cli.GetAsType<int>("output_points");
+    p.particle_fps = cli.GetAsType<double>("particle_fps");
     p.output = cli.GetAsType<bool>("output");
     p.verbose = !cli.GetAsType<bool>("quiet");
     p.render = !cli.GetAsType<bool>("no_vis");
@@ -494,13 +497,14 @@ int main(int argc, char* argv[]) {
         }
         cout << "[demo] settle done at t=" << t << " s  soil_top=" << soil_top << " m" << endl;
     }
+    // Dir path
+    std::string pdir = out_dir + "particles";
+    std::filesystem::create_directories(pdir);
+    sysSPH.SetOutputLevel(OutputLevel::CRM_FULL);
     if (p.output) {
         // Full per-particle state (positions, velocities, density/pressure, the 6
         // Cauchy stress components). For a static bed, sigma_zz(z) should equal
         // rho*g*(soil_top - z); this is the standard geostatic sanity check.
-        std::string pdir = out_dir + "particles";
-        std::filesystem::create_directories(pdir);
-        sysSPH.SetOutputLevel(OutputLevel::CRM_FULL);
         sysSPH.SaveParticleData(pdir);
         // Subsampled settled profile for a quick plot of pressure vs depth.
         auto pos = sysSPH.GetParticlePositions();
@@ -524,8 +528,10 @@ int main(int argc, char* argv[]) {
     const double push_duration = travel_target / p.velocity;                   // [s]
     const double t_end_max = t_push + 1.5 * push_duration;                     // safety cap [s]
     const double out_interval = push_duration / std::max(1, p.output_points);  // [s]
+    const double particle_interval = 1.0 / p.particle_fps;
     double next_out = t_push;
     int next_progress_pct = 10;
+
 
     // Pressure-sinkage curve. Columns:
     //   time_s        : simulation time [s]
@@ -538,10 +544,17 @@ int main(int argc, char* argv[]) {
     csv << std::setprecision(9);
 
     double plate_travel = 0;
+    int last_frame = -1;
     while (plate_travel < travel_target && t < t_end_max) {
         sysFSI.DoStepDynamics(meta_step);
         t += meta_step;
         plate_travel = p.velocity * (t - t_push);
+        int frame = (int)((t - t_push) / particle_interval);
+        if (frame > last_frame) {
+            sysSPH.SaveParticleData(pdir);
+            last_frame = frame;
+        }
+
 
         if (p.render) {
             if (!vis->Run())
