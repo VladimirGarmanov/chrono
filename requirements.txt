@@ -1,0 +1,6 @@
+# Packing the sweep output into arrays (convert.py).
+numpy>=1.26
+pandas>=2.0
+
+# Neighbour search when building training graphs from the packed frames.
+scipy>=1.11

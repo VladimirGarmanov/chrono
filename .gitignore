@@ -120,3 +120,12 @@ src/demos/python/DEMO_OUTPUT
 ## Keys
 ##---------------------------------------------------
 *.pem
+##---------------------------------------------------
+## FSI surrogate: simulation output and dataset
+##---------------------------------------------------
+
+DEMO_OUTPUT/
+dataset/
+runs.csv
+*.npy
+.venv/
