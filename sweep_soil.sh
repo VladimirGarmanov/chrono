@@ -19,7 +19,16 @@ set -o pipefail
 
 # ---------------------------------------------------------------- configuration
 
-DEMO="./build/bin/demo_FSI-SPH_PlateSinkage"
+# Build directory: override with DEMO=... , otherwise prefer the ninja build
+# when one exists. The choice is printed rather than silently taken, so a stale
+# binary in the other tree cannot be used without it showing up in the log.
+if [ -z "${DEMO:-}" ]; then
+    for candidate in ./build-ninja/bin/demo_FSI-SPH_PlateSinkage \
+                     ./build/bin/demo_FSI-SPH_PlateSinkage; do
+        [ -x "$candidate" ] && { DEMO="$candidate"; break; }
+    done
+    DEMO="${DEMO:-./build/bin/demo_FSI-SPH_PlateSinkage}"
+fi
 WORK_DIR="DEMO_OUTPUT/FSI_Plate_Sinkage"   # fixed by the demo
 RUNS_DIR="DEMO_OUTPUT/plate_runs"          # where finished runs are parked
 MANIFEST="runs_soil.csv"
@@ -65,8 +74,9 @@ already_done() {
 # ------------------------------------------------------------------ preflight
 
 printf '%s CRM plate-sinkage sweep %s\n' "$B$CY" "$R"
-printf '%s %d runs · %d phi × %d cohesion · spacing %s · %s fps%s\n\n' \
+printf '%s %d runs · %d phi × %d cohesion · spacing %s · %s fps%s\n' \
     "$DIM" "$TOTAL" "${#PHI_DEGS[@]}" "${#COHESIONS[@]}" "$SPACING" "$PARTICLE_FPS" "$R"
+printf '%s binary: %s%s\n\n' "$DIM" "$DEMO" "$R"
 
 if [ ! -x "$DEMO" ] && [ "$DRY_RUN" = 0 ]; then
     printf '%s[!]%s demo binary not found: %s\n' "$RD" "$R" "$DEMO"
