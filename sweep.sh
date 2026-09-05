@@ -20,7 +20,10 @@ MANIFEST="runs.csv"
 
 # Swept parameters
 VISCOSITIES=(1 2 5 10 20)
-HEIGHTS=(1.0 2.0 3.0 4.0 5.0 6.0 7.0)
+# Capped at 5.0: a column of height h reaches sqrt(2*g*h) in free fall, and
+# past max_velocity below the weakly-compressible model blows up (density NaN).
+# 6.0 and 7.0 give 10.8 and 11.7 m/s against a 10.0 ceiling and always abort.
+HEIGHTS=(1.0 2.0 3.0 4.0 5.0)
 
 # Held fixed across the sweep: the neighbourhood statistics the network sees
 # depend on the particle spacing, so mixing resolutions in one dataset would

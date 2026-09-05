@@ -107,12 +107,20 @@ def main():
                     help="directory holding the per-run subdirectories")
     ap.add_argument("--out", default="dataset", help="where to write the .npy files")
     ap.add_argument("--jobs", type=int, default=8, help="parallel CSV readers")
+    ap.add_argument("--only", default=None,
+                    help="comma-separated run tags to pack, instead of every run found")
     ap.add_argument("--delete", action="store_true",
                     help="remove each run's particles/ directory once it is packed")
     args = ap.parse_args()
 
     root, out_dir = Path(args.root), Path(args.out)
     runs = sorted(d for d in root.iterdir() if d.is_dir() and (d / "particles").is_dir())
+    if args.only:
+        wanted = {t.strip() for t in args.only.split(",") if t.strip()}
+        runs = [d for d in runs if d.name in wanted]
+        missing = wanted - {d.name for d in runs}
+        if missing:
+            sys.exit(f"no packable run directory for: {', '.join(sorted(missing))}")
     if not runs:
         sys.exit(f"no runs with a particles/ directory under {root}")
 
