@@ -65,6 +65,16 @@ TOTAL=$(( ${#PHI_DEGS[@]} * ${#COHESIONS[@]} ))
 free_gb() { df -k / | tail -1 | awk '{print int($4/1024/1024)}'; }
 hms() { printf '%02d:%02d:%02d' $(($1/3600)) $(($1%3600/60)) $(($1%60)); }
 
+bar() {  # bar <done> <total>
+    local done=$1 total=$2 width=32
+    local filled=$(( done * width / total ))
+    printf '%s[%s' "$DIM" "$GR"
+    [ $filled -gt 0 ] && printf '%0.s#' $(seq 1 $filled)
+    printf '%s' "$DIM"
+    [ $filled -lt $width ] && printf '%0.s.' $(seq 1 $((width - filled)))
+    printf ']%s %s%d/%d%s' "$DIM" "$B" "$done" "$total" "$R"
+}
+
 # A run counts as done only if the manifest says it finished, not merely because
 # a directory exists: an interrupted run leaves a partial directory behind.
 already_done() {
@@ -163,7 +173,8 @@ for phi in "${PHI_DEGS[@]}"; do
 
         echo "${tag},${phi},${coh},${SPACING},${PARTICLE_FPS},${RHEOLOGY},${n_particles},${n_frames},${wall},${status}" >> "$MANIFEST"
 
-        printf '          %selapsed %s · free %s GiB%s\n\n' \
+        printf '          '; bar "$i" "$TOTAL"
+        printf '  %selapsed %s · free %s GiB%s\n\n' \
             "$DIM" "$(hms $(( $(date +%s) - started )))" "$(free_gb)" "$R"
     done
 done
