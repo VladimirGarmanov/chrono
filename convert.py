@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Pack the per-frame CSV output of a Chrono::FSI SPH sweep into one array per run.
+"""Pack the per-frame CSV output of a Chrono::FSI SPH sweep into arrays per run.
 
 Chrono writes one CSV per output frame, which is both bulky (text) and slow to
-read at training time. This collapses each run into a single float32 array of
-shape (n_frames, n_particles, n_features).
+read at training time. This collapses each run into float32 arrays of shape
+(n_frames, n_markers, n_features).
 
 Both physics problems are handled; the format is detected from each run's CSV
 header, since the two solvers write different columns (SphUtilsPrint.cu).
@@ -13,8 +13,17 @@ header, since the two solvers write different columns (SphUtilsPrint.cu).
                                p11 p22 p33  shear12 shear13 shear23
                                pc Ev Sv
 
-Dropped in both cases: |U| and acc are magnitudes derivable from the velocity
-and force columns, and CRM's h is the smoothing length, constant within a run.
+Dropped in both cases: |U| and acc are magnitudes derivable from the columns
+kept, and CRM's h is the smoothing length, constant within a run.
+
+Three marker groups are written out, because a surrogate has to see all of them
+as neighbours: a soil particle under the plate is driven by plate markers above
+it, and one at the wall is held by boundary markers beside it. Omitting either
+leaves the network with a hole exactly where the physics happens.
+
+    <tag>.npy           the SPH continuum (soil or fluid), every frame
+    <tag>_plate.npy     rigid-body BCE markers, every frame (they move)
+    <tag>_boundary.npy  container BCE markers, one frame (they do not)
 
 Usage:
     ./convert.py --root DEMO_OUTPUT/plate_runs --out dataset_soil
@@ -51,9 +60,9 @@ KEEP_CRM = [
     "pc", "Ev", "Sv",
 ]
 
-# Chrono numbers its frames without zero padding, so fluid10 sorts before
-# fluid2 lexically. Ordering by the embedded integer is what keeps the frames
-# in time order — getting this wrong silently scrambles every trajectory.
+# Chrono numbers its frames without zero padding, so fluid10 sorts before fluid2
+# lexically. Ordering by the embedded integer is what keeps the frames in time
+# order — getting this wrong silently scrambles every trajectory.
 FRAME_RE = re.compile(r"(\d+)\.csv$")
 
 
@@ -79,48 +88,79 @@ def read_frame(args):
     return df[keep].to_numpy(dtype=np.float32)
 
 
-def convert_run(run_dir, out_dir, jobs, delete):
-    """Pack one run. Returns (error, label, n_features); error is None on success."""
-    particles = run_dir / "particles"
-    frames = sorted(particles.glob("fluid*.csv"), key=frame_index)
+def pack_series(particles, prefix, keep, jobs):
+    """Stack every <prefix><N>.csv into one array. Returns (array, error)."""
+    frames = sorted(particles.glob(f"{prefix}*.csv"), key=frame_index)
     if not frames:
-        return "no fluid*.csv frames", None, 0
+        return None, None
 
     # A gap in the numbering means the run died partway through and the frames
     # are not a contiguous trajectory.
     numbers = [frame_index(f) for f in frames]
     if numbers != list(range(len(numbers))):
-        return (f"frame numbering is not contiguous "
-                f"(got {numbers[0]}..{numbers[-1]}, {len(numbers)} files)"), None, 0
+        return None, (f"{prefix}: frame numbering is not contiguous "
+                      f"(got {numbers[0]}..{numbers[-1]}, {len(numbers)} files)")
 
-    label, keep = detect_columns(frames[0])
     first = read_frame((frames[0], keep))
-    n_particles, n_cols = first.shape
-    data = np.empty((len(frames), n_particles, n_cols), dtype=np.float32)
+    n_markers, n_cols = first.shape
+    data = np.empty((len(frames), n_markers, n_cols), dtype=np.float32)
     data[0] = first
 
     with ProcessPoolExecutor(max_workers=jobs) as pool:
         work = ((f, keep) for f in frames[1:])
         for i, arr in enumerate(pool.map(read_frame, work, chunksize=8), start=1):
-            if arr.shape[0] != n_particles:
-                return f"frame {i} has {arr.shape[0]} particles, expected {n_particles}", label, n_cols
+            if arr.shape[0] != n_markers:
+                return None, (f"{prefix}: frame {i} has {arr.shape[0]} markers, "
+                              f"expected {n_markers}")
             data[i] = arr
 
     if not np.isfinite(data).all():
-        return "array contains NaN or inf — the run diverged", label, n_cols
+        return None, f"{prefix}: contains NaN or inf — the run diverged"
+
+    return data, None
+
+
+def convert_run(run_dir, out_dir, jobs, delete):
+    """Pack one run. Returns (error, label, summary); error is None on success."""
+    particles = run_dir / "particles"
+
+    fluid_frames = sorted(particles.glob("fluid*.csv"), key=frame_index)
+    if not fluid_frames:
+        return "no fluid*.csv frames", None, ""
+    label, keep = detect_columns(fluid_frames[0])
+
+    soil, error = pack_series(particles, "fluid", keep, jobs)
+    if error:
+        return error, label, ""
+
+    plate, error = pack_series(particles, "rigidBCE", keep, jobs)
+    if error:
+        return error, label, ""
+
+    # The plate drives the whole experiment, so its trajectory has to line up
+    # frame for frame with the soil's.
+    if plate is not None and plate.shape[0] != soil.shape[0]:
+        return (f"plate has {plate.shape[0]} frames, soil has {soil.shape[0]}",
+                label, "")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    np.save(out_dir / f"{run_dir.name}.npy", data)
+    np.save(out_dir / f"{run_dir.name}.npy", soil)
+    summary = f"soil {soil.shape}"
 
-    # The boundary markers are static, so one frame of them is enough.
+    if plate is not None:
+        np.save(out_dir / f"{run_dir.name}_plate.npy", plate)
+        summary += f" plate {plate.shape}"
+
+    # The container markers never move, so one frame of them is enough.
     boundary = particles / "boundary0.csv"
     if boundary.exists():
         np.save(out_dir / f"{run_dir.name}_boundary.npy", read_frame((boundary, keep)))
+        summary += " +boundary"
 
     if delete:
         shutil.rmtree(particles)
 
-    return None, label, n_cols
+    return None, label, summary
 
 
 def human(n_bytes):
@@ -161,20 +201,21 @@ def main():
     started = time.time()
 
     for i, run_dir in enumerate(runs, start=1):
-        print(f"[{i:02d}/{len(runs)}] {run_dir.name:<14} ", end="", flush=True)
+        print(f"[{i:02d}/{len(runs)}] {run_dir.name:<16} ", end="", flush=True)
         t0 = time.time()
         csv_bytes = sum(f.stat().st_size for f in (run_dir / "particles").glob("*.csv"))
 
-        error, label, n_cols = convert_run(run_dir, out_dir, args.jobs, args.delete)
+        error, label, summary = convert_run(run_dir, out_dir, args.jobs, args.delete)
         if error:
             print(f"skip — {error}")
             skipped += 1
             continue
 
-        npy_bytes = (out_dir / f"{run_dir.name}.npy").stat().st_size
+        npy_bytes = sum(f.stat().st_size
+                        for f in out_dir.glob(f"{run_dir.name}*.npy"))
         total_out += npy_bytes
         packed += 1
-        print(f"{label} x{n_cols}  {human(csv_bytes)} -> {human(npy_bytes)}  "
+        print(f"{label}  {summary}  {human(csv_bytes)} -> {human(npy_bytes)}  "
               f"({csv_bytes / npy_bytes:.1f}x)  {time.time() - t0:.0f}s")
 
     print(f"\npacked {packed}, skipped {skipped}, wrote {human(total_out)} "
