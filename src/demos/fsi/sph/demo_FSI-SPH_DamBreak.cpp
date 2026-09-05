@@ -36,10 +36,19 @@ using namespace chrono::fsi::sph;
 
 // =============================================================================
 
-bool GetProblemSpecs(int argc, char** argv, double& t_end, bool& verbose, bool& output, double& output_fps, bool& render, double& render_fps, bool& snapshots, int& ps_freq) {
+bool GetProblemSpecs(int argc, char** argv, double& t_end, double& initial_spacing, double& step_size, double& density, double& viscosity, double& fxDim, double& fyDim, double& fzDim, std::string& run_tag, bool& verbose, bool& output, double& output_fps, bool& render, double& render_fps, bool& snapshots, int& ps_freq) {
     ChCLI cli(argv[0], "Dam Break FSI demo");
 
     cli.AddOption<double>("Input", "t_end", "Simulation duration [s]", std::to_string(t_end));
+    cli.AddOption<double>("Input", "initial_spacing", "Initial SPH particle spacing [m]", std::to_string(initial_spacing));
+    cli.AddOption<double>("Input", "step_size", "Integration step size [s]", std::to_string(step_size));
+    cli.AddOption<double>("Input", "density", "Fluid density [kg/m3]", std::to_string(density));
+    cli.AddOption<double>("Input", "viscosity", "Fluid viscosity [Pa s]", std::to_string(viscosity));
+    cli.AddOption<double>("Input", "fxDim", "Fluid domain size in X [m]", std::to_string(fxDim));
+    cli.AddOption<double>("Input", "fyDim", "Fluid domain size in Y [m]", std::to_string(fyDim));
+    cli.AddOption<double>("Input", "fzDim", "Fluid domain size in Z [m]", std::to_string(fzDim));
+
+    cli.AddOption<std::string>("Output", "run_tag", "Name of the output subdirectory (default: auto from solver settings)", run_tag);
 
     cli.AddOption<bool>("Output", "quiet", "Disable verbose terminal output");
 
@@ -58,6 +67,14 @@ bool GetProblemSpecs(int argc, char** argv, double& t_end, bool& verbose, bool& 
     }
 
     t_end = cli.GetAsType<double>("t_end");
+    initial_spacing = cli.GetAsType<double>("initial_spacing");
+    step_size = cli.GetAsType<double>("step_size");
+    density = cli.GetAsType<double>("density");
+    viscosity = cli.GetAsType<double>("viscosity");
+    fxDim = cli.GetAsType<double>("fxDim");
+    fyDim = cli.GetAsType<double>("fyDim");
+    fzDim = cli.GetAsType<double>("fzDim");
+    run_tag = cli.GetAsType<std::string>("run_tag");
 
     verbose = !cli.GetAsType<bool>("quiet");
     output = cli.GetAsType<bool>("output");
@@ -84,18 +101,27 @@ int main(int argc, char* argv[]) {
     double render_fps = 100;
     bool snapshots = false;
     int ps_freq = 1;
-    if (!GetProblemSpecs(argc, argv, t_end, verbose, output, output_fps, render, render_fps, snapshots, ps_freq))
+
+    // Fluid properties
+    double density = 1000;
+    double viscosity = 5;
+
+    // Dimension of the fluid domain
+    double fxDim = 4.0;
+    double fyDim = 1.0;
+    double fzDim = 4.0;
+
+    // Name of the per-run output subdirectory (empty: derive it from the solver settings)
+    std::string run_tag = "";
+
+    if (!GetProblemSpecs(argc, argv, t_end, initial_spacing, step_size, density, viscosity, fxDim, fyDim, fzDim,
+                         run_tag, verbose, output, output_fps, render, render_fps, snapshots, ps_freq))
         return 1;
 
     // Dimension of the space domain
     double bxDim = 12.0;
     double byDim = 1.0;
     double bzDim = 8.0;
-
-    // Dimension of the fluid domain
-    double fxDim = 4.0;
-    double fyDim = 1.0;
-    double fzDim = 4.0;
 
     // Create a physics system and an FSI system
     ChSystemSMC sysMBS;
@@ -108,8 +134,8 @@ int main(int argc, char* argv[]) {
     sysFSI.SetStepsizeMBD(step_size);
 
     ChFsiFluidSystemSPH::FluidProperties fluid_props;
-    fluid_props.density = 1000;
-    fluid_props.viscosity = 5;
+    fluid_props.density = density;
+    fluid_props.viscosity = viscosity;
 
     sysSPH.SetCfdSPH(fluid_props);
 
@@ -186,7 +212,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    out_dir = out_dir + sysSPH.GetPhysicsProblemString() + "_" + sysSPH.GetSphIntegrationSchemeString() + "_ps" + std::to_string(ps_freq);
+    if (run_tag.empty())
+        out_dir = out_dir + sysSPH.GetPhysicsProblemString() + "_" + sysSPH.GetSphIntegrationSchemeString() + "_ps" + std::to_string(ps_freq);
+    else
+        out_dir = out_dir + run_tag;
     if (!CreateOutputDirectory(std::filesystem::path(out_dir))) {
         std::cerr << "Error creating directory " << out_dir << std::endl;
         return 1;
